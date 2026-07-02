@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+
+# Local tooling / secrets
+.claude/
+.streamlit/secrets.toml
+
+# Generated analysis outputs & backtest artifacts (regenerated on each run)
+output/
+eval/
+*.log
+
+# Exported screener results (regenerated each run)
+screener_results.csv
+mf_screener_results.csv
+*_export.csv
+1.csv
