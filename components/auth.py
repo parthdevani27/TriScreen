@@ -51,8 +51,25 @@ def require_login() -> None:
         st.caption("Ask the owner to add your email, or sign in with an approved account.")
         st.button("Log out", on_click=st.logout)
         st.stop()
+    # authorized — the account chip is rendered by render_account_footer() AFTER the
+    # page runs, so it sits at the BOTTOM of the sidebar (a clean footer).
 
-    # 3) Authorized — persistent logout in the sidebar
+
+def render_account() -> None:
+    """Render the signed-in account chip + logout as a clean bar at the TOP of the
+    sidebar. Call in the entrypoint BEFORE pg.run() so it always renders (a page's
+    st.stop() would otherwise suppress anything added after it)."""
+    if not _auth_configured() or not st.user.is_logged_in:
+        return
+    email = getattr(st.user, "email", "") or ""
+    name = getattr(st.user, "name", "") or email
+    initial = (name.strip()[:1] or email[:1] or "?").upper()
     with st.sidebar:
-        st.caption(f"Signed in · {st.user.email}")
-        st.button("Log out", on_click=st.logout, use_container_width=True, key="_logout")
+        with st.popover(f"👤  {name}", use_container_width=True):
+            st.markdown(
+                f'<div class="acct">'
+                f'<div class="acct-av">{initial}</div>'
+                f'<div class="acct-meta"><div class="acct-name">{name}</div>'
+                f'<div class="acct-mail" title="{email}">{email}</div></div>'
+                f'</div>', unsafe_allow_html=True)
+            st.button("Log out", on_click=st.logout, use_container_width=True, key="_logout")

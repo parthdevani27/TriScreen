@@ -20,8 +20,8 @@ import streamlit.components.v1 as components
 from plotly.subplots import make_subplots
 
 import screener_core as core
-from components.theme import (PAGE, INK, INK_2, MUTED, GRID, BLUE, VIOLET,
-                              GOOD, WARNING, CRITICAL, QUALITY_COLOR)
+from components.theme import (PAGE, SURFACE, INK, INK_2, MUTED, GRID, BLUE, VIOLET,
+                              GOOD, WARNING, CRITICAL, QUALITY_COLOR, PLOTLY_TEMPLATE)
 from components.ui import (badge_html, fmt_pct, fmt_num, stat_tile,
                            style_verdict, style_quality)
 
@@ -29,10 +29,6 @@ from components.ui import (badge_html, fmt_pct, fmt_num, stat_tile,
 #  Header
 # --------------------------------------------------------------------------- #
 st.markdown('<p class="app-title">📈 Positional Stock Screener</p>', unsafe_allow_html=True)
-st.markdown('<p class="app-sub">Paste NSE tickers → <b>Setup</b> (backtested technical + risk) '
-            'and <b>Quality</b> (live fundamentals) scores → ranked shortlist, plus the '
-            '⚠️ <b>manual checks</b> no free tool can do. A screener, not a profit predictor.</p>',
-            unsafe_allow_html=True)
 
 
 def fmt_analyst(s):
@@ -156,13 +152,9 @@ def _copy_button(md_text: str):
     components.html(_COPY_HTML.replace("__PAYLOAD__", json.dumps(md_text)), height=46)
 
 
-def parse_tickers(text: str, uploaded) -> list[str]:
-    raw = text or ""
-    if uploaded is not None:
-        content = uploaded.read().decode("utf-8", errors="ignore")
-        raw = raw + "\n" + content
+def parse_tickers(text: str) -> list[str]:
     parts = []
-    for chunk in raw.replace(",", "\n").replace(";", "\n").replace(" ", "\n").splitlines():
+    for chunk in (text or "").replace(",", "\n").replace(";", "\n").replace(" ", "\n").splitlines():
         c = chunk.strip()
         if c:
             parts.append(c)
@@ -178,8 +170,6 @@ with st.sidebar:
         "Tickers (comma / space / newline separated)",
         value="TITAN, BEL, INDIANB, LUPIN, DRREDDY",
         height=120, placeholder="e.g. TCS, RELIANCE, HDFCBANK")
-
-    up = st.file_uploader("…or upload a CSV/TXT of tickers", type=["csv", "txt"])
 
     interval = st.selectbox("Interval", ["daily", "weekly", "monthly"], index=0,
                             help="Daily is the only interval the criteria are calibrated for; "
@@ -202,7 +192,7 @@ with st.sidebar:
 #  Run
 # --------------------------------------------------------------------------- #
 if run:
-    names = parse_tickers(tickers_text, up)
+    names = parse_tickers(tickers_text)
     if not names:
         st.warning("Enter at least one ticker.")
     else:
@@ -308,9 +298,6 @@ st.dataframe(styled, use_container_width=True, hide_index=True, height=min(560, 
                           "gain per 1 unit risked. Below 1:1 is auto-AVOID. 'open' = blue-sky (no overhead "
                           "resistance in the last year); the deep dive shows a 3×ATR planning target for it."),
              })
-st.caption("**Setup** = backtested technical/risk score · **Quality** = live fundamentals (not backtested) · "
-           "**Reward:Risk** = upside ÷ stop (want ≥ 3:1). A strong candidate is good on *all three* — "
-           "and still needs the ⚠️ manual checks below.")
 
 # ---- CSV download ----
 buf = io.StringIO()
@@ -526,7 +513,7 @@ else:
     fig.add_trace(go.Bar(x=view.index, y=view["Volume"], name="Volume",
                          marker_color=vol_colors, marker_line_width=0, opacity=0.55), row=2, col=1)
     fig.update_layout(
-        template="plotly_dark", paper_bgcolor=PAGE, plot_bgcolor="#1a1a19",
+        template=PLOTLY_TEMPLATE, paper_bgcolor=PAGE, plot_bgcolor=SURFACE,
         height=560, margin=dict(l=10, r=10, t=10, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0),
         xaxis_rangeslider_visible=False, font=dict(color=INK_2),

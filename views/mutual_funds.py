@@ -16,7 +16,7 @@ import streamlit as st
 import mf_core as mf
 import mf_data as mfd
 from components.theme import (PAGE, SURFACE, INK, INK_2, MUTED, GRID, BLUE,
-                              AQUA, GOOD, WARNING, CRITICAL)
+                              AQUA, GOOD, WARNING, CRITICAL, PLOTLY_TEMPLATE)
 from components.ui import (badge_html, fmt_pct, fmt_num, stat_tile, style_verdict,
                            check_row, manual_row, group_label)
 
@@ -26,11 +26,8 @@ from components.ui import (badge_html, fmt_pct, fmt_num, stat_tile, style_verdic
 st.markdown('<p class="app-title">📊 Mutual Fund Screener</p>', unsafe_allow_html=True)
 
 
-def parse_names(text: str, uploaded) -> list[str]:
-    raw = text or ""
-    if uploaded is not None:
-        raw = raw + "\n" + uploaded.read().decode("utf-8", errors="ignore")
-    return [ln.strip() for ln in raw.splitlines() if ln.strip()]
+def parse_names(text: str) -> list[str]:
+    return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
 
 
 # --------------------------------------------------------------------------- #
@@ -46,7 +43,6 @@ with st.sidebar:
                "HDFC Mid-Cap Opportunities Direct Growth\n"
                "UTI Nifty 50 Index Direct Growth"),
         height=150, placeholder="One fund per line — prefer the Direct-Growth plan")
-    up = st.file_uploader("…or upload a CSV/TXT", type=["csv", "txt"], key="mf_upload")
     rf = st.number_input("Risk-free rate (annual %)", min_value=0.0, max_value=15.0,
                          value=mf.RISK_FREE_DEFAULT * 100, step=0.25,
                          help="Short-term risk-free (91-day T-bill ≈ 5.26%, Jul-2026) — the textbook "
@@ -75,7 +71,7 @@ with st.sidebar:
 #  Run
 # --------------------------------------------------------------------------- #
 if run:
-    names = parse_names(funds_text, up)
+    names = parse_names(funds_text)
     if not names:
         st.warning("Enter at least one fund.")
     else:
@@ -192,11 +188,6 @@ view = st.selectbox(
          "Pick a category to drill in.")
 
 if view == ALL_LABEL:
-    st.caption("**Top-to-bottom = best-to-worst overall.** Ranking all actively-managed equity funds "
-               "together is valid because the score is **benchmark-relative & risk-adjusted** (each fund "
-               "vs its own peers), not raw returns. ⚠️ But *which to buy* also depends on your risk "
-               "appetite — **diversify across categories**, don't just buy the top five (which may all be "
-               "small-caps). Satellite & Index funds are in their own views.")
     if core:
         render_group(core, show_category=True)
     else:
@@ -255,7 +246,7 @@ st.markdown("### Deep dive")
 options = [s["name"] for s in ok] + [s["name"] for s in errs]
 if not options:
     st.stop()
-pick = st.selectbox("Pick a fund", options, key="mf_pick")
+pick = st.selectbox("", options, key="mf_pick")
 
 sel_res = next((r for r in results if (r.get("name") or r.get("query")) == pick), None)
 sel_sum = next((s for s in summaries if s["name"] == pick), None)
@@ -335,7 +326,7 @@ try:
     f100 = f / f.iloc[0] * 100
     fig.add_trace(go.Scatter(x=f100.index, y=f100.values, name="Fund",
                              line=dict(color=AQUA, width=2)))
-    fig.update_layout(template="plotly_dark", paper_bgcolor=PAGE, plot_bgcolor=SURFACE,
+    fig.update_layout(template=PLOTLY_TEMPLATE, paper_bgcolor=PAGE, plot_bgcolor=SURFACE,
                       height=430, margin=dict(l=10, r=10, t=10, b=10),
                       legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0),
                       font=dict(color=INK_2), hovermode="x unified")
