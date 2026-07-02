@@ -11,10 +11,12 @@ strict stops. Educational — not financial advice.
 from __future__ import annotations
 
 import io
+import json
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from plotly.subplots import make_subplots
 
 import screener_core as core
@@ -47,6 +49,111 @@ def _entry_timing_label(et: dict) -> str:
     if et.get("extended"):
         return "⏫ extended — wait for a pullback"
     return "OK — not extended, no spike to chase"
+
+
+def _cell(v) -> str:
+    """Sanitise a value for a Markdown table cell (escape pipes, flatten newlines)."""
+    return str(v).replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _deepdive_markdown(pick, sel_res, sel_sum, score, qa, manual) -> str:
+    """Assemble the entire deep-dive view as a self-contained Markdown document."""
+    rr = score.get("risk_reward")
+    rr_str = f"{rr:.1f}:1" if isinstance(rr, (int, float)) else "open"
+    an_up, an_rec = sel_sum.get("analyst_upside"), (sel_sum.get("analyst_rec") or "n/a").replace("_", " ")
+    L = [f"# {pick} — {sel_sum.get('verdict')}", ""]
+    L.append(f"*As of {sel_res.get('as_of')} · Setup completeness: {score.get('band')}*  ")
+    L.append(f"**Verdict:** {sel_sum.get('rationale')}")
+    L += ["", "| Metric | Value |", "|---|---|"]
+    L.append(f"| Price | {fmt_num(sel_sum.get('price'), p='₹')} |")
+    L.append(f"| Setup (technical) | {score.get('confirmed_score')}→{score.get('best_case_score')}/10 |")
+    L.append(f"| Quality (fundamental) | {qa.get('rating')} ({qa.get('good')}/{qa.get('applicable')} good) |")
+    L.append(f"| Reward:Risk | {rr_str} |")
+    L.append(f"| Analyst target | {fmt_pct(an_up)} · {an_rec} |")
+
+    warns = []
+    dq = sel_res.get("data_quality") or {}
+    et = score.get("entry_timing") or {}
+    if dq.get("partial_trimmed"):
+        warns.append(f"⏱️ Today's in-progress candle ({dq.get('partial_date')}) excluded — analysis on the last complete session.")
+    if et.get("spiked_today"):
+        warns.append(f"🔥 Spiked ~{et.get('day_move_pct')}% today — don't chase; wait 2-3 days for a pullback.")
+    if dq.get("suspect_gap"):
+        warns.append(f"⚠️ Possible unadjusted corporate action (~{dq.get('move_pct')}% on {dq.get('date')}) — verify before trusting the setup.")
+    if et.get("extended"):
+        warns.append(f"⏫ Extended ~{et.get('pct_above_sma50')}% above the 50-DMA — poor entry.")
+    if warns:
+        L += ["", "## Flags"] + [f"- {w}" for w in warns]
+
+    L += ["", "## 10-criteria checklist", "| # | Criterion | Status | Detail |", "|---|---|---|---|"]
+    for c in score.get("criteria", []):
+        L.append(f"| {c['id']} | {_cell(c['label'])} | {c['status']} | {_cell(c['detail'])} |")
+
+    L += ["", "## Trade plan", "| Field | Value |", "|---|---|"]
+    L.append(f"| Entry (last close) | {fmt_num(sel_sum.get('price'), p='₹')} |")
+    L.append(f"| Stop-loss | {'₹' + str(score.get('stop_price')) if score.get('stop_price') else '—'} |")
+    sd = score.get("stop_dist_pct")
+    L.append(f"| Stop distance | {fmt_pct(-sd) if isinstance(sd, (int, float)) else '—'} |")
+    if score.get("target_price"):
+        L.append(f"| Target (resistance) | ₹{score.get('target_price')} |")
+        L.append(f"| Upside to target | {fmt_pct(score.get('upside_pct')) if score.get('upside_pct') is not None else '—'} |")
+        L.append(f"| Reward:Risk | {rr_str} |")
+    elif score.get("atr_target"):
+        L.append(f"| Target (3×ATR, blue-sky) | ₹{score.get('atr_target')} |")
+        L.append(f"| Reward:Risk | {score.get('atr_rr')}:1 (ATR est.) |" if score.get("atr_rr") else "| Reward:Risk | open |")
+    else:
+        L.append("| Target | open upside |")
+    L.append(f"| Stop type | {'structural support' if score.get('stop_structural') else '8% hard stop (no support)'} |")
+    L.append(f"| Entry timing | {_entry_timing_label(et)} |")
+
+    L += ["", f"## Fundamental quality — {qa.get('rating')} ({qa.get('good')}/{qa.get('applicable')} good)"]
+    if qa.get("checks"):
+        L += ["| Group | Check | Value | Status |", "|---|---|---|---|"]
+        for cq in qa["checks"]:
+            L.append(f"| {_cell(cq['group'])} | {_cell(cq['label'])} | {_cell(cq['value'])} | {cq['status']} |")
+    else:
+        L.append("_No fundamental data available from the feed._")
+
+    L += ["", "## ⚠️ Manual review required (not in free data)"]
+    for m in manual:
+        L.append(f"- **{m['title']}** ({m['sev']}) — {_cell(m['detail'])} · _Check:_ {m['where']}")
+
+    news = sel_res.get("news")
+    if news and news.get("headlines"):
+        L += ["", "## Recent headlines"] + [f"- {h.get('title', '')}" for h in news["headlines"][:5]]
+
+    L += ["", "_Educational only — not financial advice. Setup quality & risk, not a profit prediction._"]
+    return "\n".join(L)
+
+
+_COPY_HTML = """
+<div style="font-family:sans-serif;">
+  <button id="ddcopy" style="background:#3987e5;color:#fff;border:none;padding:7px 15px;
+    border-radius:7px;cursor:pointer;font-size:0.85rem;font-weight:600;">📋 Copy deep dive (Markdown)</button>
+  <span id="ddmsg" style="margin-left:10px;color:#22c55e;font-size:0.82rem;"></span>
+</div>
+<script>
+const t = __PAYLOAD__;
+const b = document.getElementById('ddcopy'), m = document.getElementById('ddmsg');
+b.onclick = async () => {
+  let ok = false;
+  try { await navigator.clipboard.writeText(t); ok = true; }
+  catch (e) {
+    const a = document.createElement('textarea');
+    a.value = t; a.style.position = 'fixed'; a.style.opacity = '0';
+    document.body.appendChild(a); a.focus(); a.select();
+    try { ok = document.execCommand('copy'); } catch (e2) { ok = false; }
+    document.body.removeChild(a);
+  }
+  m.textContent = ok ? '✓ Copied to clipboard' : 'Copy failed — select the text and copy manually';
+  setTimeout(() => { m.textContent = ''; }, 2500);
+};
+</script>
+"""
+
+
+def _copy_button(md_text: str):
+    components.html(_COPY_HTML.replace("__PAYLOAD__", json.dumps(md_text)), height=46)
 
 
 def parse_tickers(text: str, uploaded) -> list[str]:
@@ -256,6 +363,9 @@ h6.metric("Analyst target", fmt_pct(sel_sum.get("analyst_upside")),
 # rationale rather than the scorecard's pre-verdict "buy" action to avoid contradiction).
 st.caption(f"As of {sel_res.get('as_of')} · Setup completeness: {score.get('band')} · "
            f"**Verdict:** {sel_sum.get('rationale')}")
+
+# One-click: copy the ENTIRE deep dive as Markdown
+_copy_button(_deepdive_markdown(pick, sel_res, sel_sum, score, qa, manual))
 
 dq = sel_res.get("data_quality") or {}
 if dq.get("partial_trimmed"):

@@ -37,6 +37,9 @@ VERDICT_STYLE = {
     "WEAK":         (WARNING, "⚠️"),
     "POOR":         (CRITICAL, "⛔"),
     "UNTESTED":     (MUTED, "•"),
+    # ipo (listing-gain verdict)
+    "APPLY":        (GOOD, "✅"),
+    "NEUTRAL":      (BLUE, "◆"),
     # shared
     "ERROR":        (MUTED, "•"),
 }

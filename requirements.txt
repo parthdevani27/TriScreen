@@ -1,6 +1,13 @@
+# --- app / UI ---
+streamlit[auth]>=1.42        # [auth] pulls Authlib for st.login (Google OIDC)
+Authlib>=1.3.2               # OIDC (pinned explicitly)
+httpx>=0.27                  # required by Authlib's OAuth client (st.login 500s without it)
+plotly>=5.20                 # interactive charts in the views
+# --- data + analysis ---
 yfinance>=0.2.40
 pandas>=2.0
 numpy>=1.24
 scipy>=1.11
+requests>=2.31               # mfapi.in / Kuvera fetches (mf_data.py)
 mplfinance>=0.12.10b0
 pyarrow>=14.0

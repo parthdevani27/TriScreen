@@ -14,12 +14,14 @@ st.set_page_config(page_title="Market Analysis", page_icon="📈",
                    layout="wide", initial_sidebar_state="expanded")
 
 from components.theme import inject_css
+from components.auth import require_login
 
 inject_css()
+require_login()   # Google login + email allow-list (no-op locally without [auth] secrets)
 
 stocks = st.Page("views/stocks.py", title="Stocks", icon=":material/trending_up:", default=True)
 funds = st.Page("views/mutual_funds.py", title="Mutual Funds", icon=":material/account_balance:")
-ipo = st.Page("views/ipo.py", title="IPO", icon=":material/upcoming:")
+ipo = st.Page("views/ipo.py", title="IPO", icon=":material/rocket_launch:")
 
-pg = st.navigation({"Screeners": [stocks, funds], "Coming soon": [ipo]}, position="top")
+pg = st.navigation({"Screeners": [stocks, funds, ipo]}, position="top")
 pg.run()
