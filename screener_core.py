@@ -23,6 +23,11 @@ import pandas as pd
 
 from src.main import analyze, OUTPUT_ROOT
 from src.common import resolve_symbol
+from src import deep_checks
+
+# Promoter-pledge risk thresholds (% of promoter holding pledged). Tunable.
+PLEDGE_SEVERE = 50.0   # >= this -> AVOID (serious governance red flag)
+PLEDGE_HIGH = 25.0     # >= this -> cannot be a conviction (STRONG) buy; demoted/flagged
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +143,23 @@ def _verdict(score: dict) -> tuple[str, str]:
     if best >= 7:
         return "WATCH", "A partial setup: some momentum/structure criteria pass but not all. Wait for a cleaner trigger."
     return "AVOID", "Lacks the momentum + structure for a 1-2 month positional hold right now."
+
+
+def _apply_ownership_gate(verdict, rationale, pledge, distress):
+    """Fold the two HARD-FACT / established risk signals into the verdict:
+    heavy promoter pledge, and Altman balance-sheet distress. Only downgrades."""
+    if verdict == "AVOID":
+        return verdict, rationale
+    if pledge is not None and pledge >= PLEDGE_SEVERE:
+        return "AVOID", (f"Promoters have pledged {pledge:.0f}% of their holding — a severe governance "
+                         "red flag. Skip regardless of the technical setup.")
+    if pledge is not None and pledge >= PLEDGE_HIGH and verdict == "STRONG SETUP":
+        return "WATCH", (f"Meets the technical criteria, but promoters have pledged {pledge:.0f}% — "
+                         "not a conviction buy until you've checked why.")
+    if distress and verdict == "STRONG SETUP":
+        return "WATCH", ("Meets the technical criteria, but the balance sheet is in Altman-distress "
+                         "territory — verify solvency before any conviction buy.")
+    return verdict, rationale
 
 
 _VERDICT_RANK = {"STRONG SETUP": 0, "WATCH": 1, "AVOID": 2}
@@ -275,10 +297,12 @@ def manual_review_items(res: dict) -> list[dict]:
     q = fund.get("quality", {}) or {}
     items = [
         {"sev": "high", "title": "Promoter pledge & insider selling (C7)",
-         "detail": "A high or rising promoter share-pledge, or promoters selling, is a serious red flag.",
+         "detail": "A high or rising promoter share-pledge, or promoters selling, is a serious red flag. "
+                   "Pledge % is now auto-fetched in the deep checks above — confirm the trend & any insider selling.",
          "where": "screener.in · nseindia.com (shareholding) · trendlyne"},
         {"sev": "high", "title": "Institutional trend — FII / DII / MF (C8)",
-         "detail": "We show a current holding-% snapshot, but not whether big investors are net buying or selling over the last 2 quarters.",
+         "detail": "The quarterly FII/DII holding TREND is now auto-fetched in the deep checks above; still confirm the "
+                   "MF-specific split and any single-quarter distortions on the source.",
          "where": "trendlyne · screener.in (shareholding pattern)"},
         {"sev": "high", "title": "Governance & accounting quality",
          "detail": "Auditor changes, related-party transactions, contingent liabilities, promoter conduct. No ratio catches fraud (see IndusInd).",
@@ -330,13 +354,24 @@ def summarize(res: dict) -> dict:
                 "pe": None, "quality_rating": None, "analyst_upside": None, "analyst_rec": None,
                 "extended": None, "spiked_today": None, "day_move_pct": None,
                 "poor_entry": None, "entry_note": None, "stop_structural": None,
-                "data_flag": False, "data_flag_detail": {}, "partial_trimmed": False}
+                "data_flag": False, "data_flag_detail": {}, "partial_trimmed": False,
+                "pledge_pct": None, "pledged": False, "fii_dir": None, "dii_dir": None,
+                "altman_zone": None, "distress": False}
 
     score = res.get("scorecard", {})
     fund = res.get("fundamentals", {})
     rs = fund.get("relative_strength") or {}
     qa = quality_assessment(fund.get("quality") or {})
     verdict, rationale = _verdict(score)
+
+    # ---- ownership / forensic overlay (only present for the non-AVOID shortlist) ----
+    own = res.get("ownership") or {}
+    forensic = res.get("forensic") or {}
+    pledge = own.get("pledge_pct") if not own.get("error") else None
+    altman = (forensic.get("altman") or {}) if not forensic.get("error") else {}
+    distress = altman.get("zone") == "distress"
+    pledged = pledge is not None and pledge >= PLEDGE_HIGH
+    verdict, rationale = _apply_ownership_gate(verdict, rationale, pledge, distress)
 
     return {
         "pe": qa["pe"],
@@ -375,6 +410,12 @@ def summarize(res: dict) -> dict:
         "data_flag": bool((res.get("data_quality") or {}).get("suspect_gap")),
         "data_flag_detail": res.get("data_quality") or {},
         "partial_trimmed": bool((res.get("data_quality") or {}).get("partial_trimmed")),
+        "pledge_pct": pledge,
+        "pledged": pledged,
+        "fii_dir": (own.get("fii") or {}).get("direction") if not own.get("error") else None,
+        "dii_dir": (own.get("dii") or {}).get("direction") if not own.get("error") else None,
+        "altman_zone": altman.get("zone"),
+        "distress": distress,
         "error": None,
     }
 
@@ -386,13 +427,15 @@ def sort_key(row: dict):
       2. data-suspect sinks corrupt levels/RS make the whole score untrustworthy,
                             so a ⚠️-flagged stock goes to the BOTTOM of its tier
                             (fixes VEDL ranking #2 on a demerger-corrupted 7.7:1).
-      3. best_case / confirmed  more criteria passed ranks higher.
-      4. extended sinks     an over-extended (poor-entry) name is demoted among
+      3. pledge / distress sinks  a governance (heavy pledge) or solvency
+                            (Altman-distress) risk drops the stock within its tier.
+      4. best_case / confirmed  more criteria passed ranks higher.
+      5. extended sinks     an over-extended (poor-entry) name is demoted among
                             otherwise-equal setups.
-      5. reward:risk        'open upside' (no overhead resistance) is treated as
+      6. reward:risk        'open upside' (no overhead resistance) is treated as
                             FAVOURABLE (~3:1), not as zero — so a clean breakout
                             ranks above a weak-R:R dud instead of below it.
-      6. 6-month momentum   final tiebreak, stronger first.
+      7. 6-month momentum   final tiebreak, stronger first.
     """
     rr = row.get("rr")
     rr_rank = rr if isinstance(rr, (int, float)) else 3.0   # open upside ≈ a solid 3:1
@@ -401,9 +444,11 @@ def sort_key(row: dict):
     if not isinstance(rs, (int, float)):
         rs = row.get("rs_6m")
     poor_entry = row.get("poor_entry") or row.get("extended") or row.get("spiked_today")
+    gov_risk = row.get("pledged") or row.get("distress")
     return (
         _VERDICT_RANK.get(row.get("verdict"), 3),
         1 if row.get("data_flag") else 0,
+        1 if gov_risk else 0,
         -(row.get("best_case") or 0),
         -(row.get("confirmed") or 0),
         1 if poor_entry else 0,
@@ -423,7 +468,40 @@ def _last_price(res: dict):
 # ---------------------------------------------------------------------------
 # Batch runner (parallel; calls progress_cb(done, total, last_name) as it goes).
 # ---------------------------------------------------------------------------
-def run_batch(names, interval="daily", with_news=False, max_workers=6, progress_cb=None):
+def _attach_ownership(results: list[dict], max_workers=6):
+    """Second pass: fetch promoter pledge / FII-DII trend / forensic scores, but ONLY
+    for stocks that PASS the technical screen (non-AVOID) — no point checking pledge
+    on names you're already skipping. Keeps it to ~10-20 scrapes, polite + fast.
+    Everything is disk-cached per day and degrades gracefully to an 'error' field."""
+    todo = [r for r in results
+            if not r.get("_error") and _verdict(r.get("scorecard", {}) or {})[0] != "AVOID"]
+    if not todo:
+        return
+
+    def fetch(r):
+        base = r.get("stock", "")
+        sym = r.get("symbol") or f"{base}.NS"
+        q = r.get("fundamentals", {}).get("quality") or {}
+        isfin = bool(q.get("is_financial"))
+        try:
+            r["ownership"] = deep_checks.screener_shareholding(base)
+        except Exception as e:
+            r["ownership"] = {"error": f"{type(e).__name__}: {str(e)[:60]}"}
+        try:
+            r["forensic"] = deep_checks.forensic_scores_cached(
+                sym, isfin, q.get("sector", ""), q.get("industry", ""))
+        except Exception as e:
+            r["forensic"] = {"error": f"{type(e).__name__}: {str(e)[:60]}"}
+
+    # Screener rate-limits: keep this pass gentle (<=3 concurrent) + the fetchers
+    # retry with backoff, so we don't get ~40% of the shortlist throttled out.
+    workers = min(3, max_workers, len(todo))
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        list(ex.map(fetch, todo))
+
+
+def run_batch(names, interval="daily", with_news=False, with_ownership=True,
+              max_workers=6, progress_cb=None):
     names = [n.strip() for n in names if n and n.strip()]
     # de-dupe, preserve order
     seen, ordered = set(), []
@@ -447,8 +525,10 @@ def run_batch(names, interval="daily", with_news=False, max_workers=6, progress_
             done += 1
             if progress_cb:
                 progress_cb(done, total, n)
-    # return in the user's input order
-    return [results[n] for n in ordered]
+    ordered_results = [results[n] for n in ordered]
+    if with_ownership:
+        _attach_ownership(ordered_results, max_workers)   # pledge/institutions for the shortlist
+    return ordered_results
 
 
 # ---------------------------------------------------------------------------

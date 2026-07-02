@@ -17,10 +17,11 @@ venv/
 # Generated analysis outputs & backtest artifacts (regenerated on each run)
 output/
 eval/
+cache/
 *.log
 
 # Exported screener results (regenerated each run)
-screener_results.csv
-mf_screener_results.csv
+screener_results*.csv
+mf_screener_results*.csv
 *_export.csv
-1.csv
+[0-9].csv

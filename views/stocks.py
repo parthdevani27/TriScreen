@@ -20,6 +20,7 @@ import streamlit.components.v1 as components
 from plotly.subplots import make_subplots
 
 import screener_core as core
+from src import deep_checks as dc
 from components.theme import (PAGE, SURFACE, INK, INK_2, MUTED, GRID, BLUE, VIOLET,
                               GOOD, WARNING, CRITICAL, QUALITY_COLOR, PLOTLY_TEMPLATE)
 from components.ui import (badge_html, fmt_pct, fmt_num, stat_tile,
@@ -52,7 +53,41 @@ def _cell(v) -> str:
     return str(v).replace("|", "\\|").replace("\n", " ").strip()
 
 
-def _deepdive_markdown(pick, sel_res, sel_sum, score, qa, manual) -> str:
+def _pledge_line(p: dict) -> str:
+    if not p or p.get("error"):
+        return f"Pledge: — (source unavailable: {p.get('error', 'n/a') if p else 'n/a'})"
+    pl = p.get("pledge_pct")
+    if pl is None:
+        return "Pledge: —"
+    if pl >= 1:
+        return f"🔴 Promoters have pledged **{pl:.1f}%** of their holding (red flag — verify trend)"
+    return "🟢 No meaningful promoter pledge"
+
+
+def _trend_line(label: str, d: dict) -> str:
+    if not d:
+        return f"{label}: —"
+    arrow = {"rising": "🔼", "falling": "🔻", "flat": "▪️"}.get(d.get("direction"), "")
+    return f"{label}: {d.get('latest')}% ({arrow} {d.get('direction')}, {d.get('delta'):+.2f} pts vs ~2q ago)"
+
+
+def _forensic_line(f: dict) -> list:
+    if not f or f.get("error"):
+        return [f"_Forensic scores unavailable: {f.get('error', 'n/a') if f else 'n/a'}_"]
+    out = []
+    p, a, b = f.get("piotroski"), f.get("altman"), f.get("beneish")
+    if p:
+        out.append(f"- **Piotroski F**: {p['score']}/{p['used']} ({p['rating']}) — fundamental health")
+    if a:
+        out.append(f"- **Altman Z″**: {a['z']} ({a['zone']}) — distress risk")
+    elif f.get("altman_na"):
+        out.append(f"- **Altman Z″**: n/a ({f['altman_na']} — model doesn't apply)")
+    if b:
+        out.append(f"- **Beneish M**: {b['m']} — {'⚠️ earnings-manipulation flag (> −2.22)' if b['flag'] else 'no earnings-manipulation flag'}")
+    return out or ["_No forensic scores computable from the feed._"]
+
+
+def _deepdive_markdown(pick, sel_res, sel_sum, score, qa, manual, auto=None) -> str:
     """Assemble the entire deep-dive view as a self-contained Markdown document."""
     rr = score.get("risk_reward")
     rr_str = f"{rr:.1f}:1" if isinstance(rr, (int, float)) else "open"
@@ -109,6 +144,24 @@ def _deepdive_markdown(pick, sel_res, sel_sum, score, qa, manual) -> str:
             L.append(f"| {_cell(cq['group'])} | {_cell(cq['label'])} | {_cell(cq['value'])} | {cq['status']} |")
     else:
         L.append("_No fundamental data available from the feed._")
+
+    if auto:
+        f, p, g = auto.get("forensic"), auto.get("pledge"), auto.get("gov")
+        L += ["", "## 🤖 Automated deep checks (free sources — verify the big ones)"]
+        L += ["**Governance & accounting (forensic scores):**"] + _forensic_line(f)
+        L += ["", f"**Promoter pledge (C7):** {_pledge_line(p)}"]
+        if p and not p.get("error"):
+            L += ["", "**Institutional trend (C8):**",
+                  f"- {_trend_line('Promoters', p.get('promoter'))}",
+                  f"- {_trend_line('FIIs', p.get('fii'))}",
+                  f"- {_trend_line('DIIs', p.get('dii'))}"]
+        if g and not g.get("error"):
+            if g.get("governance"):
+                L += ["", "**Recent governance / auditor filings (BSE):**"]
+                L += [f"- {gi['date']} — {_cell(gi['subject'])}" for gi in g["governance"]]
+            if g.get("transcript"):
+                L += ["", f"**Latest concall transcript:** {g['transcript'].get('date')} — {g['transcript'].get('pdf')}"]
+        L += ["", "_Auto-checks are best-effort from free sources (yfinance statements · screener.in · BSE) — hints, not verified truth._"]
 
     L += ["", "## ⚠️ Manual review required (not in free data)"]
     for m in manual:
@@ -177,6 +230,10 @@ with st.sidebar:
     with_news = st.toggle("Include news sentiment", value=False,
                           help="Fetches Google-News headlines + keyword sentiment. "
                                "Slower; not part of the backtested edge.")
+    with_ownership = st.toggle("Include pledge & institution checks", value=True,
+                               help="For the shortlist (non-AVOID) only: fetches promoter pledge %, "
+                                    "FII/DII trend & Altman distress and folds them into the verdict + "
+                                    "ranking. Adds a few seconds on the first run of the day (then cached).")
     verify = st.button("✓ Verify tickers", use_container_width=True, key="stocks_verify",
                        help="Quick check that every ticker resolves on NSE/BSE — before a full run.")
     run = st.button("Run analysis", type="primary", use_container_width=True)
@@ -204,7 +261,8 @@ if run:
         def cb(done, total, name):
             prog.progress(done / total, text=f"Analyzed {done}/{total} — {name}")
 
-        results = core.run_batch(names, interval=interval, with_news=with_news, progress_cb=cb)
+        results = core.run_batch(names, interval=interval, with_news=with_news,
+                                 with_ownership=with_ownership, progress_cb=cb)
         prog.empty()
         st.session_state["stocks.results"] = results
         st.session_state["stocks.interval"] = interval
@@ -263,11 +321,24 @@ if errs:
 # ---- ranked table ----
 st.markdown("### Ranked shortlist")
 
+def _instn(s):
+    a = {"rising": "🔼", "falling": "🔻", "flat": "▪️"}
+    fii, dii = s.get("fii_dir"), s.get("dii_dir")
+    if not fii and not dii:
+        return "—"
+    return f'FII{a.get(fii, "")} DII{a.get(dii, "")}'
+
+
 rows = []
 for s in ok:
     flags = []
     if s.get("data_flag"):
         flags.append("⚠️ data")
+    if s.get("pledged"):
+        pl = s.get("pledge_pct")
+        flags.append(f"⛓️ pledged{f' {pl:.0f}%' if isinstance(pl,(int,float)) else ''}")
+    if s.get("distress"):
+        flags.append("🔴 distress")
     if s.get("spiked_today"):
         dm = s.get("day_move_pct")
         flags.append(f"🔥 spiked{f' +{dm:.0f}%' if isinstance(dm,(int,float)) else ''}")
@@ -286,6 +357,7 @@ for s in ok:
         "Quality": s.get("quality_rating") or "—",
         "RS 3m": fmt_pct(s.get("rs_3m")),
         "Reward:Risk": f'{s["rr"]:.1f}:1' if isinstance(s["rr"], (int, float)) else "open",
+        "Instns": _instn(s),
         "Analyst": fmt_analyst(s),
         "Why": why,
     })
@@ -299,10 +371,16 @@ st.dataframe(styled, use_container_width=True, hide_index=True, height=min(560, 
              column_config={
                  "Flags": st.column_config.TextColumn(
                      "Flags",
-                     help="⚠️ data = a large single-day gap suggests an unadjusted corporate action "
-                          "(demerger/spin-off) that may distort this stock's stats — verify. "
-                          "🔥 spiked = up ≥5% today (or at a circuit) — don't chase, wait 2-3 days for a pullback. "
-                          "⏫ extended = price is >25% above its 50-DMA, a poor (chasing) entry."),
+                     help="⚠️ data = unadjusted corporate action may distort stats — verify. "
+                          "⛓️ pledged = promoters pledged ≥25% of their holding (≥50% → AVOID). "
+                          "🔴 distress = Altman balance-sheet distress zone. "
+                          "🔥 spiked = up ≥5% today — don't chase, wait 2-3 days. "
+                          "⏫ extended = >25% above the 50-DMA (chasing entry)."),
+                 "Instns": st.column_config.TextColumn(
+                     "Instns",
+                     help="Institutional holding trend vs ~2 quarters ago (from screener.in): "
+                          "🔼 rising / 🔻 falling / ▪️ flat. FII = foreign, DII = domestic. "
+                          "Informational — shown for the shortlist only."),
                  "Why": st.column_config.TextColumn("Why", width="large"),
                  "Setup": st.column_config.TextColumn(
                      "Setup", help="Technical/momentum score (confirmed → best-case /10). Backtested."),
@@ -349,6 +427,25 @@ score = sel_res.get("scorecard", {})
 qa = core.quality_assessment(sel_res.get("fundamentals", {}).get("quality") or {})
 manual = core.manual_review_items(sel_res)
 
+# ---- automated deep checks (free sources; cached per day; best-effort) ----
+_q = sel_res.get("fundamentals", {}).get("quality") or {}
+_isfin = bool(_q.get("is_financial"))
+auto = {"forensic": {}, "pledge": {}, "gov": {}}
+with st.spinner("Running auto-checks (forensics · pledge · institutions · filings)…"):
+    try:
+        auto["forensic"] = dc.forensic_scores_cached(
+            sel_res.get("symbol", ""), _isfin, _q.get("sector", ""), _q.get("industry", ""))
+    except Exception as e:
+        auto["forensic"] = {"error": str(e)[:80]}
+    try:
+        auto["pledge"] = dc.screener_shareholding(pick)
+    except Exception as e:
+        auto["pledge"] = {"error": str(e)[:80]}
+    try:
+        auto["gov"] = dc.bse_governance(pick)
+    except Exception as e:
+        auto["gov"] = {"error": str(e)[:80]}
+
 # ---- header row: verdict + key metrics ----
 h1, h2, h3, h4, h5, h6 = st.columns([1.5, 1, 1, 1, 1, 1])
 with h1:
@@ -374,7 +471,7 @@ st.caption(f"As of {sel_res.get('as_of')} · Setup completeness: {score.get('ban
            f"**Verdict:** {sel_sum.get('rationale')}")
 
 # One-click: copy the ENTIRE deep dive as Markdown
-_copy_button(_deepdive_markdown(pick, sel_res, sel_sum, score, qa, manual))
+_copy_button(_deepdive_markdown(pick, sel_res, sel_sum, score, qa, manual, auto))
 
 dq = sel_res.get("data_quality") or {}
 if dq.get("partial_trimmed"):
@@ -488,6 +585,72 @@ else:
             f'</div>', unsafe_allow_html=True)
     st.caption("Valuation thresholds are rough rules of thumb — a high P/E can be justified by growth. "
                "Always compare to sector peers and the stock's own history.")
+
+# ---- automated deep checks ----
+st.markdown("---")
+st.markdown(f'##### 🤖 Automated deep checks '
+            f'<span style="color:{MUTED};font-weight:400;font-size:.9rem">'
+            f'— free sources, best-effort; verify the big ones before acting</span>',
+            unsafe_allow_html=True)
+
+_f = auto.get("forensic") or {}
+if _f.get("error"):
+    st.caption(f"Forensic scores unavailable: {_f['error']}")
+else:
+    a1, a2, a3 = st.columns(3)
+    _p, _al, _bn = _f.get("piotroski"), _f.get("altman"), _f.get("beneish")
+    a1.metric("Piotroski F", f"{_p['score']}/{_p['used']}" if _p else "—",
+              help="Fundamental health (0–9). ≥7 strong · ≤3 weak.")
+    a2.metric("Altman Z″", (f"{_al['z']} · {_al['zone']}" if _al
+              else (f"n/a ({_f.get('altman_na')})" if _f.get("altman_na") else "—")),
+              help="Financial-distress risk. >2.6 safe · <1.1 distress. Skipped for banks/NBFCs & utilities.")
+    a3.metric("Beneish M", ((f"{_bn['m']}" + (" ⚠️" if _bn.get('flag') else "")) if _bn else "—"),
+              help="Earnings-manipulation flag when M > −2.22.")
+    for fl in _f.get("flags", []):
+        st.markdown(f'<div class="crit-det" style="color:{CRITICAL};">🔴 {fl}</div>', unsafe_allow_html=True)
+
+_pl = auto.get("pledge") or {}
+if _pl.get("error"):
+    st.caption(f"Pledge / shareholding (screener.in) unavailable: {_pl['error']}")
+else:
+    _p_pct = _pl.get("pledge_pct")
+    if _p_pct and _p_pct >= 1:
+        st.markdown(f'<div class="crit-det" style="color:{CRITICAL};">🔴 <b>Promoter pledge: {_p_pct:.1f}%</b>'
+                    f' — C7 red flag, verify the trend</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="crit-det" style="color:{GOOD};">🟢 No meaningful promoter pledge (C7)</div>',
+                    unsafe_allow_html=True)
+
+    def _tl(lbl, d):
+        if not d:
+            return f"{lbl}: —"
+        arrow = {"rising": "🔼", "falling": "🔻", "flat": "▪️"}.get(d.get("direction"), "")
+        col = GOOD if d.get("direction") == "rising" else CRITICAL if d.get("direction") == "falling" else MUTED
+        return f'<span style="color:{col};">{lbl} {d.get("latest")}% {arrow} {d.get("direction")} ({d.get("delta"):+.2f})</span>'
+    st.markdown(f'<div class="crit-det">Institutional trend (C8, vs ~2 quarters ago): '
+                f'{_tl("Promoter", _pl.get("promoter"))} · {_tl("FII", _pl.get("fii"))} · '
+                f'{_tl("DII", _pl.get("dii"))}</div>', unsafe_allow_html=True)
+
+_g = auto.get("gov") or {}
+if _g.get("error"):
+    st.caption(f"BSE filings unavailable: {_g['error']}")
+else:
+    if _g.get("governance"):
+        st.markdown(f'<div class="crit-det" style="color:{WARNING};">⚠️ Recent governance / auditor filings (BSE):</div>',
+                    unsafe_allow_html=True)
+        for gi in _g["governance"][:5]:
+            _lnk = f' · <a href="{gi["pdf"]}" target="_blank">PDF</a>' if gi.get("pdf") else ""
+            st.markdown(f'<div class="crit-det" style="margin-left:.6rem;">• {gi["date"]} — {gi["subject"]}{_lnk}</div>',
+                        unsafe_allow_html=True)
+    else:
+        st.caption("No auditor-change / governance red-flag filings in the last ~180 days.")
+    if _g.get("transcript") and _g["transcript"].get("pdf"):
+        st.markdown(f'<div class="crit-det">📄 Latest concall transcript: '
+                    f'<a href="{_g["transcript"]["pdf"]}" target="_blank">{_g["transcript"].get("date")} — PDF</a>'
+                    f' <span style="color:{MUTED};">(read it for forward guidance)</span></div>',
+                    unsafe_allow_html=True)
+st.caption("Sources: yfinance statements · screener.in · BSE filings. Best-effort hints from free data — "
+           "confirm pledge/governance at the source before acting. Forensic scores flag statistics, not proven fraud.")
 
 # ---- manual review ----
 st.markdown(f'##### ⚠️ Manual review required '
