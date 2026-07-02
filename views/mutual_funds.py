@@ -18,7 +18,7 @@ import mf_data as mfd
 from components.theme import (PAGE, SURFACE, INK, INK_2, MUTED, GRID, BLUE,
                               AQUA, GOOD, WARNING, CRITICAL, PLOTLY_TEMPLATE)
 from components.ui import (badge_html, fmt_pct, fmt_num, stat_tile, style_verdict,
-                           check_row, manual_row, group_label)
+                           check_row, manual_row, group_label, render_verify_panel)
 
 # --------------------------------------------------------------------------- #
 #  Header
@@ -56,10 +56,13 @@ with st.sidebar:
         help="Funds often share a score (it's built from discrete PASS/CAUTION/FAIL checks). "
              "Default breaks ties by rolling consistency & Sharpe (the system's risk-adjusted thesis). "
              "Switch to CAGR for a returns-first order.")
+    verify = st.button("✓ Verify funds", use_container_width=True, key="mf_verify",
+                       help="Quick check that every fund name resolves to a scheme — before a full run.")
     run = st.button("Run analysis", type="primary", use_container_width=True)
     if st.button("Clear cache", use_container_width=True, key="mf_clear"):
         mf.clear_cache()
         st.session_state.pop("mf.results", None)
+        st.session_state.pop("mf.verify", None)
         st.toast("Cache cleared")
     st.markdown('<div class="disclaimer">Educational only — <b>not financial advice</b>. '
                 'Benchmark is a <b>price index</b> (true TRI isn\'t free) so alpha is '
@@ -83,6 +86,23 @@ if run:
         st.session_state["mf.results"] = mf.run_batch(names, rf=rf, progress_cb=cb)
         st.session_state["mf.rf"] = rf
         prog.empty()
+
+# ---- verify (pre-flight fund-name check) ----
+if verify:
+    _vnames = parse_names(funds_text)
+    if not _vnames:
+        st.warning("Enter at least one fund to verify.")
+    else:
+        _vp = st.progress(0.0, text="Verifying…")
+        st.session_state["mf.verify"] = mf.verify_funds(
+            _vnames, progress_cb=lambda d, t, n: _vp.progress(d / t, text=f"Checked {d}/{t} — {n}"))
+        _vp.empty()
+
+_vres = st.session_state.get("mf.verify")
+if _vres:
+    st.markdown("### Fund check")
+    render_verify_panel(_vres, item="fund")
+    st.markdown("---")
 
 results = st.session_state.get("mf.results")
 if not results:

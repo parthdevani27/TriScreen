@@ -1,10 +1,19 @@
+# Dual theme: users switch via the ⚙ Settings menu (Light / Dark / Use system setting).
+# base = default/fallback mode. primaryColor + font are shared (base-only).
 [theme]
 base = "dark"
 primaryColor = "#3987e5"
+font = "sans serif"
+
+[theme.dark]
 backgroundColor = "#0d0d0d"
 secondaryBackgroundColor = "#1a1a19"
 textColor = "#ffffff"
-font = "sans serif"
+
+[theme.light]
+backgroundColor = "#f7f7f5"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#0b0b0b"
 
 [server]
 headless = true

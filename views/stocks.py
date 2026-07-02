@@ -23,7 +23,7 @@ import screener_core as core
 from components.theme import (PAGE, SURFACE, INK, INK_2, MUTED, GRID, BLUE, VIOLET,
                               GOOD, WARNING, CRITICAL, QUALITY_COLOR, PLOTLY_TEMPLATE)
 from components.ui import (badge_html, fmt_pct, fmt_num, stat_tile,
-                           style_verdict, style_quality)
+                           style_verdict, style_quality, render_verify_panel)
 
 # --------------------------------------------------------------------------- #
 #  Header
@@ -177,10 +177,13 @@ with st.sidebar:
     with_news = st.toggle("Include news sentiment", value=False,
                           help="Fetches Google-News headlines + keyword sentiment. "
                                "Slower; not part of the backtested edge.")
+    verify = st.button("✓ Verify tickers", use_container_width=True, key="stocks_verify",
+                       help="Quick check that every ticker resolves on NSE/BSE — before a full run.")
     run = st.button("Run analysis", type="primary", use_container_width=True)
     if st.button("Clear cache", use_container_width=True, key="stocks_clear"):
         core.clear_cache()
         st.session_state.pop("stocks.results", None)
+        st.session_state.pop("stocks.verify", None)
         st.toast("Cache cleared")
 
     st.markdown('<div class="disclaimer">Educational only — <b>not financial advice</b>. '
@@ -205,6 +208,25 @@ if run:
         prog.empty()
         st.session_state["stocks.results"] = results
         st.session_state["stocks.interval"] = interval
+
+# --------------------------------------------------------------------------- #
+#  Verify (pre-flight ticker check)
+# --------------------------------------------------------------------------- #
+if verify:
+    _vnames = parse_tickers(tickers_text)
+    if not _vnames:
+        st.warning("Enter at least one ticker to verify.")
+    else:
+        _vp = st.progress(0.0, text="Verifying…")
+        st.session_state["stocks.verify"] = core.verify_tickers(
+            _vnames, progress_cb=lambda d, t, n: _vp.progress(d / t, text=f"Checked {d}/{t} — {n}"))
+        _vp.empty()
+
+_vres = st.session_state.get("stocks.verify")
+if _vres:
+    st.markdown("### Ticker check")
+    render_verify_panel(_vres, item="ticker")
+    st.markdown("---")
 
 # --------------------------------------------------------------------------- #
 #  Results

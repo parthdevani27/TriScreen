@@ -36,6 +36,47 @@ def clear_cache():
 
 
 # --------------------------------------------------------------------------- #
+#  Fund-name VERIFICATION (fast pre-flight: does the name resolve to a scheme?)
+# --------------------------------------------------------------------------- #
+def verify_fund(name: str) -> dict:
+    n = (name or "").strip()
+    if not n:
+        return {"name": name, "valid": False, "symbol": None, "reason": "empty"}
+    try:
+        r = data.resolve_scheme(n)
+        if not r:
+            return {"name": n, "valid": False, "symbol": None,
+                    "reason": "no matching scheme on mfapi (check spelling / plan)"}
+        return {"name": n, "valid": True,
+                "symbol": r.get("name") or f"code {r['code']}", "reason": ""}
+    except Exception as e:
+        return {"name": n, "valid": False, "symbol": None, "reason": str(e)[:90]}
+
+
+def verify_funds(names, max_workers=6, progress_cb=None) -> list[dict]:
+    names = [x.strip() for x in names if x and x.strip()]
+    seen, ordered = set(), []
+    for n in names:
+        u = n.lower()
+        if u not in seen:
+            seen.add(u)
+            ordered.append(n)
+    results, done, total = {}, 0, len(ordered)
+    with ThreadPoolExecutor(max_workers=min(max_workers, max(1, total))) as ex:
+        futs = {ex.submit(verify_fund, n): n for n in ordered}
+        for fut in as_completed(futs):
+            n = futs[fut]
+            try:
+                results[n] = fut.result()
+            except Exception as e:
+                results[n] = {"name": n, "valid": False, "symbol": None, "reason": str(e)[:90]}
+            done += 1
+            if progress_cb:
+                progress_cb(done, total, n)
+    return [results[n] for n in ordered]
+
+
+# --------------------------------------------------------------------------- #
 #  Category classification + benchmark map (editable config)
 # --------------------------------------------------------------------------- #
 _INTL_KEYS = ("us ", "u.s", "nasdaq", "s&p 500", "global", "international",

@@ -22,6 +22,47 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 
 from src.main import analyze, OUTPUT_ROOT
+from src.common import resolve_symbol
+
+
+# ---------------------------------------------------------------------------
+# Lightweight ticker VERIFICATION (fast pre-flight check before a full run).
+# resolve_symbol tries .NS then .BO with a 5-day history probe — cheap.
+# ---------------------------------------------------------------------------
+def verify_ticker(name: str) -> dict:
+    n = (name or "").strip()
+    if not n:
+        return {"name": name, "valid": False, "symbol": None, "reason": "empty"}
+    try:
+        symbol, _ = resolve_symbol(n)
+        return {"name": n, "valid": True, "symbol": symbol, "reason": ""}
+    except Exception as e:
+        return {"name": n, "valid": False, "symbol": None,
+                "reason": str(e).split(".")[0][:90] or "not found on Yahoo (NSE/BSE)"}
+
+
+def verify_tickers(names, max_workers=8, progress_cb=None) -> list[dict]:
+    names = [x.strip() for x in names if x and x.strip()]
+    seen, ordered = set(), []
+    for n in names:
+        u = n.upper()
+        if u not in seen:
+            seen.add(u)
+            ordered.append(n)
+    results, done, total = {}, 0, len(ordered)
+    with ThreadPoolExecutor(max_workers=min(max_workers, max(1, total))) as ex:
+        futs = {ex.submit(verify_ticker, n): n for n in ordered}
+        for fut in as_completed(futs):
+            n = futs[fut]
+            try:
+                results[n] = fut.result()
+            except Exception as e:
+                results[n] = {"name": n, "valid": False, "symbol": None, "reason": str(e)[:90]}
+            done += 1
+            if progress_cb:
+                progress_cb(done, total, n)
+    return [results[n] for n in ordered]
+
 
 # ---------------------------------------------------------------------------
 # In-process cache (survives Streamlit reruns within the same server process).

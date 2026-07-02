@@ -78,6 +78,41 @@ def manual_row(title, detail, where, sev="medium"):
         f'</div>', unsafe_allow_html=True)
 
 
+def render_verify_panel(results, item="ticker"):
+    """Show a pre-flight verification result: valid vs not-found, each in a
+    copyable code block (st.code has a built-in 📋 copy button)."""
+    valid = [r for r in results if r.get("valid")]
+    invalid = [r for r in results if not r.get("valid")]
+    n_ok, n_bad = len(valid), len(invalid)
+
+    if n_bad == 0:
+        st.success(f"✅ All {n_ok} {item}s are valid — go ahead and hit **Run analysis**.")
+    else:
+        st.warning(f"⚠️ {n_bad} of {n_ok + n_bad} {item}s couldn't be found. Copy the ❌ list, "
+                   f"fix it (e.g. paste into an LLM: *“correct these to valid NSE {item}s”*), "
+                   f"paste back into the box, and re-verify.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"**❌ Not found ({n_bad})**")
+        if invalid:
+            st.caption("Copy (📋 top-right of the box) → give to an LLM to fix:")
+            st.code("\n".join(r["name"] for r in invalid), language=None)
+            with st.expander("Why each failed"):
+                for r in invalid:
+                    st.markdown(f"- **{r['name']}** — {r.get('reason') or 'not found'}")
+        else:
+            st.caption("None 🎉")
+    with c2:
+        st.markdown(f"**✅ Valid ({n_ok})**")
+        if valid:
+            st.caption("Resolved to:")
+            st.code("\n".join(f"{r['name']}  →  {r.get('symbol') or ''}".strip(" →")
+                              for r in valid), language=None)
+        else:
+            st.caption("None yet")
+
+
 def group_label(text):
     st.markdown(f'<div style="color:{MUTED};font-size:.72rem;text-transform:uppercase;'
                 f'letter-spacing:.07em;margin:.6rem 0 .25rem;">{text}</div>',
