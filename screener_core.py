@@ -76,17 +76,17 @@ def verify_tickers(names, max_workers=8, progress_cb=None) -> list[dict]:
 _CACHE: dict[tuple, dict] = {}
 
 
-def _key(name: str, interval: str, with_news: bool) -> tuple:
-    return (name.strip().upper(), interval, bool(with_news))
+def _key(name: str, interval: str, with_news: bool, as_of=None) -> tuple:
+    return (name.strip().upper(), interval, bool(with_news), str(as_of) if as_of else None)
 
 
-def analyze_cached(name: str, interval: str = "daily", with_news: bool = False) -> dict:
+def analyze_cached(name: str, interval: str = "daily", with_news: bool = False, as_of=None) -> dict:
     """analyze() with memoization. Returns the raw result dict (+ '_error' on failure)."""
-    k = _key(name, interval, with_news)
+    k = _key(name, interval, with_news, as_of)
     if k in _CACHE:
         return _CACHE[k]
     try:
-        res = analyze(name.strip(), interval, with_news=with_news)
+        res = analyze(name.strip(), interval, with_news=with_news, as_of=as_of)
         res["_error"] = None
     except Exception as e:  # network / bad ticker / insufficient history
         res = {"_error": f"{type(e).__name__}: {e}",
@@ -416,6 +416,8 @@ def summarize(res: dict) -> dict:
         "dii_dir": (own.get("dii") or {}).get("direction") if not own.get("error") else None,
         "altman_zone": altman.get("zone"),
         "distress": distress,
+        "is_point_in_time": bool(res.get("is_point_in_time")),
+        "as_of_full": res.get("as_of_full"),
         "error": None,
     }
 
@@ -501,7 +503,14 @@ def _attach_ownership(results: list[dict], max_workers=6):
 
 
 def run_batch(names, interval="daily", with_news=False, with_ownership=True,
-              max_workers=6, progress_cb=None):
+              as_of=None, max_workers=6, progress_cb=None):
+    import datetime
+    # A past-date (point-in-time) run: skip ownership — pledge/forensic are LIVE data
+    # and can't be back-dated, so they'd anachronistically alter a historical verdict.
+    if as_of is not None and as_of < datetime.date.today():
+        with_ownership = False
+    else:
+        as_of = None   # today/default -> exact current behaviour (as_of not threaded)
     names = [n.strip() for n in names if n and n.strip()]
     # de-dupe, preserve order
     seen, ordered = set(), []
@@ -515,7 +524,7 @@ def run_batch(names, interval="daily", with_news=False, with_ownership=True,
     total = len(ordered)
     done = 0
     with ThreadPoolExecutor(max_workers=min(max_workers, max(1, total))) as ex:
-        futs = {ex.submit(analyze_cached, n, interval, with_news): n for n in ordered}
+        futs = {ex.submit(analyze_cached, n, interval, with_news, as_of): n for n in ordered}
         for fut in as_completed(futs):
             n = futs[fut]
             try:
@@ -534,14 +543,18 @@ def run_batch(names, interval="daily", with_news=False, with_ownership=True,
 # ---------------------------------------------------------------------------
 # Chart data
 # ---------------------------------------------------------------------------
-def load_ohlcv(stock: str | None, interval: str = "daily"):
+def load_ohlcv(stock: str | None, interval: str = "daily", full: bool = False):
+    """Load saved OHLCV. full=True prefers the point-in-time '_ohlcv_full.csv' (the
+    complete series up to today, saved during a past-date run) so the chart can show
+    what happened after the analysis date; falls back to the normal analysis CSV."""
     if not stock:
         return None
-    path = os.path.join(OUTPUT_ROOT, stock, f"{stock}_{interval}_ohlcv.csv")
-    if not os.path.exists(path):
-        return None
-    try:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
-        return df
-    except Exception:
-        return None
+    base = os.path.join(OUTPUT_ROOT, stock, f"{stock}_{interval}")
+    candidates = [f"{base}_ohlcv_full.csv", f"{base}_ohlcv.csv"] if full else [f"{base}_ohlcv.csv"]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                return pd.read_csv(path, index_col=0, parse_dates=True)
+            except Exception:
+                return None
+    return None

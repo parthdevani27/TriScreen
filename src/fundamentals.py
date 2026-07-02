@@ -178,7 +178,7 @@ def gather_quality_metrics(tk, df: pd.DataFrame, info: dict) -> dict:
     }
 
 
-def gather_fundamentals(tk, df: pd.DataFrame) -> dict:
+def gather_fundamentals(tk, df: pd.DataFrame, as_of=None) -> dict:
     try:
         info = tk.info or {}
     except Exception:
@@ -194,7 +194,16 @@ def gather_fundamentals(tk, df: pd.DataFrame) -> dict:
     # read (it turns faster than 6m); 6m is kept as context / fallback.
     regime, rel = "unknown", None
     try:
-        nclose = yf.Ticker(NIFTY).history(period="1y")["Close"]
+        if as_of is None:
+            nclose = yf.Ticker(NIFTY).history(period="1y")["Close"]
+        else:
+            # point-in-time: fetch a window ending at as_of and truncate to it, so the
+            # market regime + relative strength reflect what was known on that date.
+            import datetime
+            start = (as_of - datetime.timedelta(days=470)).isoformat()
+            end = (as_of + datetime.timedelta(days=1)).isoformat()
+            nclose = yf.Ticker(NIFTY).history(start=start, end=end)["Close"]
+            nclose = nclose[nclose.index.date <= as_of]
         regime = _market_regime(nclose)
 
         def _rs(n):

@@ -10,6 +10,7 @@ strict stops. Educational — not financial advice.
 
 from __future__ import annotations
 
+import datetime
 import io
 import json
 
@@ -227,13 +228,23 @@ with st.sidebar:
     interval = st.selectbox("Interval", ["daily", "weekly", "monthly"], index=0,
                             help="Daily is the only interval the criteria are calibrated for; "
                                  "weekly/monthly re-scale the lookbacks and are experimental.")
+    _today = datetime.date.today()
+    as_of = st.date_input("Analyse as of", value=_today, max_value=_today,
+                          help="Default = today (normal live analysis). Pick a PAST date to "
+                               "back-test: technicals are computed on price data up to that date "
+                               "only. (Fundamentals/pledge are live and can't be back-dated.)")
+    _is_pit = as_of < _today
     with_news = st.toggle("Include news sentiment", value=False,
                           help="Fetches Google-News headlines + keyword sentiment. "
                                "Slower; not part of the backtested edge.")
     with_ownership = st.toggle("Include pledge & institution checks", value=True,
+                               disabled=_is_pit,
                                help="For the shortlist (non-AVOID) only: fetches promoter pledge %, "
                                     "FII/DII trend & Altman distress and folds them into the verdict + "
                                     "ranking. Adds a few seconds on the first run of the day (then cached).")
+    if _is_pit:
+        st.caption(f"⏳ Point-in-time mode ({as_of}) — pledge/institution checks are off "
+                   "(live data can't be back-dated).")
     verify = st.button("✓ Verify tickers", use_container_width=True, key="stocks_verify",
                        help="Quick check that every ticker resolves on NSE/BSE — before a full run.")
     run = st.button("Run analysis", type="primary", use_container_width=True)
@@ -262,9 +273,11 @@ if run:
             prog.progress(done / total, text=f"Analyzed {done}/{total} — {name}")
 
         results = core.run_batch(names, interval=interval, with_news=with_news,
-                                 with_ownership=with_ownership, progress_cb=cb)
+                                 with_ownership=with_ownership,
+                                 as_of=(as_of if _is_pit else None), progress_cb=cb)
         prog.empty()
         st.session_state["stocks.results"] = results
+        st.session_state["stocks.as_of"] = str(as_of) if _is_pit else None
         st.session_state["stocks.interval"] = interval
 
 # --------------------------------------------------------------------------- #
@@ -299,6 +312,14 @@ summaries = [core.summarize(r) for r in results]
 ok = [s for s in summaries if s["verdict"] != "ERROR"]
 errs = [s for s in summaries if s["verdict"] == "ERROR"]
 ok.sort(key=core.sort_key)
+
+_run_asof = st.session_state.get("stocks.as_of")
+if _run_asof:
+    st.warning(f"⏳ **Point-in-time analysis as of {_run_asof}.** The technical setup, momentum, "
+               "levels and verdict use price data **up to that date only** — this is how the screen "
+               "would have looked then. Fundamentals (Quality, P/E, analyst) are **live/today** and "
+               "pledge/institution checks are **off** (no free historical data). The deep-dive chart "
+               "shows the full price path since, so you can see what happened after.")
 
 # ---- overview stat tiles ----
 c = {"STRONG SETUP": 0, "WATCH": 0, "AVOID": 0}
@@ -672,12 +693,20 @@ st.caption("These — promoter pledge, institutional trend, governance/fraud, fo
 
 # ---- chart ----
 st.markdown("---")
-st.markdown("##### Price · SMA50 / SMA200 · levels")
-df = core.load_ohlcv(pick, interval)
+_pit = bool(sel_res.get("is_point_in_time"))
+_asof = sel_res.get("as_of")
+st.markdown("##### Price · SMA50 / SMA200 · levels"
+            + (f"  ·  ⏳ analysed as of {_asof}" if _pit else ""))
+df = core.load_ohlcv(pick, interval, full=_pit)   # full series (incl. post-as-of) in PIT mode
 if df is None or not len(df):
     st.info("Chart data not found.")
 else:
-    view = df.tail(300)
+    if _pit and _asof:
+        _idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
+        n_after = int((_idx > pd.Timestamp(_asof)).sum())   # bars since the analysis date
+        view = df.tail(max(300, n_after + 250))
+    else:
+        view = df.tail(300)
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.76, 0.24],
                         vertical_spacing=0.03)
     fig.add_trace(go.Candlestick(
@@ -688,6 +717,14 @@ else:
         if col in view.columns:
             fig.add_trace(go.Scatter(x=view.index, y=view[col], name=name,
                                      line=dict(color=color, width=2)), row=1, col=1)
+    if _pit and _asof:
+        # shade everything AFTER the analysis date + a dotted boundary line
+        fig.add_vrect(x0=_asof, x1=str(view.index[-1].date()),
+                      fillcolor=WARNING, opacity=0.10, line_width=0,
+                      annotation_text="after analysis date", annotation_position="top right",
+                      annotation_font_color=WARNING, row=1, col=1)
+        fig.add_vline(x=_asof, line=dict(color=WARNING, width=2, dash="dot"),
+                      annotation_text=f"as of {_asof}", annotation_font_color=WARNING, row=1, col=1)
     if score.get("stop_price"):
         fig.add_hline(y=score["stop_price"], line=dict(color=CRITICAL, width=1, dash="dash"),
                       annotation_text="stop", annotation_font_color=CRITICAL, row=1, col=1)

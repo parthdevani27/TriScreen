@@ -35,12 +35,28 @@ from .news import analyze_news
 OUTPUT_ROOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
 
 
-def analyze(name: str, interval: str = "daily", with_news: bool = True) -> dict:
+def analyze(name: str, interval: str = "daily", with_news: bool = True, as_of=None) -> dict:
+    """Full analysis. If `as_of` (a datetime.date) is given and is BEFORE the last
+    available session, the price series is truncated to <= as_of and every technical
+    signal is computed point-in-time (as it would have looked then). Live fundamentals
+    (.info) still reflect today — they can't be back-dated for free."""
     print(f"\n>>> Analyzing '{name}' ({interval}) ...")
 
     # 1. Data
-    symbol, tk, daily = download_history(name)
-    daily, partial_info = trim_partial_candle(daily)   # drop today's in-progress candle
+    symbol, tk, daily_all = download_history(name)
+    daily_all, partial_info = trim_partial_candle(daily_all)   # drop today's in-progress candle
+    full_last = daily_all.index[-1].date()
+
+    # point-in-time truncation (only when as_of is a genuine PAST date)
+    is_pit = as_of is not None and as_of < full_last
+    if is_pit:
+        daily = daily_all[daily_all.index.date <= as_of]
+        if len(daily) < 210:   # need enough history for SMA200 / 6-month RS
+            raise ValueError(f"Not enough price history up to {as_of} for {symbol}")
+    else:
+        daily = daily_all
+    eff_as_of = daily.index[-1].date()
+
     data_quality = detect_corporate_action_gap(daily)  # unadjusted demerger/spin-off guard
     data_quality.update(partial_info)
     df = add_indicators(resample_ohlcv(daily, interval))
@@ -48,7 +64,8 @@ def analyze(name: str, interval: str = "daily", with_news: bool = True) -> dict:
     out_dir = os.path.join(OUTPUT_ROOT, stock)
     os.makedirs(out_dir, exist_ok=True)
     print(f"    {symbol}: {len(df)} {interval} candles "
-          f"{df.index[0].date()} -> {df.index[-1].date()}")
+          f"{df.index[0].date()} -> {df.index[-1].date()}"
+          f"{f' [point-in-time as of {eff_as_of}]' if is_pit else ''}")
 
     # 2-6. Analysis modules
     sr = support_resistance(df)
@@ -59,7 +76,7 @@ def analyze(name: str, interval: str = "daily", with_news: bool = True) -> dict:
     patterns = detect_patterns(df)
     vol = analyze_volume(df)
     vprofile = volume_profile(df)
-    fund = gather_fundamentals(tk, df)
+    fund = gather_fundamentals(tk, df, as_of=eff_as_of if is_pit else None)
 
     # 6b. News + AI sentiment (live signal / risk flag)
     news = None
@@ -72,7 +89,9 @@ def analyze(name: str, interval: str = "daily", with_news: bool = True) -> dict:
 
     result = {
         "symbol": symbol, "stock": stock, "interval": interval,
-        "as_of": str(df.index[-1].date()),
+        "as_of": str(eff_as_of),
+        "as_of_full": str(full_last),
+        "is_point_in_time": is_pit,
         "data_quality": data_quality,
         "fundamentals": fund,
         "support_resistance": sr,
@@ -88,6 +107,13 @@ def analyze(name: str, interval: str = "daily", with_news: bool = True) -> dict:
     # 8. Save outputs
     prefix = f"{stock}_{interval}"
     df.to_csv(os.path.join(out_dir, f"{prefix}_ohlcv.csv"))
+    # In point-in-time mode also save the FULL series (up to today) so the deep-dive
+    # chart can show what happened AFTER the analysis date.
+    full_path = os.path.join(out_dir, f"{prefix}_ohlcv_full.csv")
+    if is_pit:
+        add_indicators(resample_ohlcv(daily_all, interval)).to_csv(full_path)
+    elif os.path.exists(full_path):
+        os.remove(full_path)   # stale from a previous PIT run — the normal CSV is now full
     try:
         df.to_parquet(os.path.join(out_dir, f"{prefix}_ohlcv.parquet"))
     except Exception as e:
