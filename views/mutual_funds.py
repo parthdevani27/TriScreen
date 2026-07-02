@@ -117,17 +117,14 @@ if errs:
             st.write(f"**{e['name']}** — {e['error']}")
 
 # ---- ranked comparison — isolated BY CATEGORY (a small-cap ≠ a large-cap) ----
-st.markdown("### Ranked comparison — within each category")
-st.caption("Funds are ranked **inside their own category** — a Small Cap isn't comparable to a Large Cap. "
-           "**Score already uses rolling** 3y/5y outperformance (the CAGR column is trailing context only), "
-           "and the verdict is **benchmark-relative** (a negative-alpha fund is downgraded). "
-           "Alpha vs a PRICE index → overstated ~dividend yield.")
+st.markdown("### Ranked comparison")
 
 CORE_ORDER = ["large", "large_mid", "flexi", "multi", "mid", "small",
               "value", "focused", "elss", "equity_other"]
 
 _COLCFG = {
     "Fund": st.column_config.TextColumn("Fund", width="medium"),
+    "Category": st.column_config.TextColumn("Category", help="⚠️ = benchmark is a proxy (sector/foreign), so alpha here is unreliable."),
     "Why": st.column_config.TextColumn("Why", width="large"),
     "Score": st.column_config.TextColumn("Score", help="Computed 0-100 (rolling/alpha/Sharpe/SD-beta/capture/track-record). Not a prediction of future return."),
     "Roll 3y": st.column_config.TextColumn("Roll 3y", help="% of daily-step 3-yr windows the fund beat its benchmark (the consistency measure that drives the score)."),
@@ -139,15 +136,16 @@ _COLCFG = {
 }
 
 
-def render_group(subset):
+def render_group(subset, show_category=False):
     subset = sorted(subset, key=skey)
     rows = []
     for i, s in enumerate(subset, 1):
+        row = {"#": i, "Verdict": s["verdict"], "Fund": s["name"]}
+        if show_category:
+            row["Category"] = s["category_label"] + (" ⚠️" if s.get("benchmark_proxy") else "")
         rows.append({
-            "#": i,
-            "Verdict": s["verdict"],
-            "Fund": s["name"],
-            "Score": s["score"] if s["score"] is not None else "—",
+            **row,
+            "Score": s["score"] if (s["score"] is not None and s["verdict"] != "UNTESTED") else "—",
             "Roll 3y": fmt_pct(s["hit_3y"], sign=False) if s.get("hit_3y") is not None else "—",
             "CAGR 3y": fmt_pct(s["cagr_3y"], sign=False),
             "Alpha": fmt_pct(s["alpha"]),
@@ -159,42 +157,68 @@ def render_group(subset):
         })
     tbl = pd.DataFrame(rows)
     styled = tbl.style.map(style_verdict, subset=["Verdict"]).set_properties(**{"font-size": "0.85rem"})
+    # size to fit ALL rows (up to a tall cap) so the fullscreen ⛶ view fills the
+    # screen instead of showing ~11 rows over a big empty area.
+    height = min(1500, 38 + 35 * (len(tbl) + 1))
     st.dataframe(styled, use_container_width=True, hide_index=True,
-                 height=min(430, 60 + 37 * len(tbl)), column_config=_COLCFG)
+                 height=height, column_config=_COLCFG)
 
 
 core = [s for s in ok if s.get("bucket") == "core"]
 satellite = [s for s in ok if s.get("bucket") == "satellite"]
 passive = [s for s in ok if s.get("bucket") == "passive"]
+hybrid = [s for s in ok if s.get("bucket") == "hybrid"]
 
-# Core equity — one ranked mini-table per category
 from collections import defaultdict
 bycat = defaultdict(list)
 for s in core:
     bycat[s["category"]].append(s)
 order = CORE_ORDER + [c for c in bycat if c not in CORE_ORDER]
-for cat in order:
-    grp = bycat.get(cat, [])
-    if not grp:
-        continue
-    st.markdown(f"#### {grp[0]['category_label']} "
-                f"<span style='color:{MUTED};font-weight:400;font-size:.85rem'>({len(grp)})</span>",
-                unsafe_allow_html=True)
-    render_group(grp)
+present_cats = [c for c in order if bycat.get(c)]
 
+# ---- view selector: one unified ranked table, filterable by category ----
+ALL_LABEL = "🏆 All core equity — ranked head-to-head"
+view_opts = [ALL_LABEL] + [bycat[c][0]["category_label"] for c in present_cats]
+if hybrid:
+    view_opts.append("⚖️ Hybrid / Multi-Asset")
 if satellite:
-    st.markdown("#### 🛰️ Satellite — Sectoral / Thematic / International")
-    st.warning("⚠️ These are benchmarked to a **generic index (Nifty 500)** because a free sector / "
-               "foreign index isn't available — so their **Alpha and Downside-capture here are unreliable** "
-               "(a *negative* downside-capture is a benchmark/currency artifact, not skill). Treat these as "
-               "**high-risk satellite** bets and judge them on the theme's outlook, not this score.")
-    render_group(satellite)
-
+    view_opts.append("🛰️ Satellite (thematic / international)")
 if passive:
-    st.markdown("#### Index / Passive")
-    st.caption("Index funds are meant to **match** the market, not beat it — judge them on low tracking "
-               "error & expense ratio, not alpha/Sharpe. A small positive alpha ≈ the index dividend yield.")
-    render_group(passive)
+    view_opts.append("📉 Index / Passive")
+view = st.selectbox(
+    "View", view_opts, index=0,
+    help="'All' ranks every actively-managed equity fund together. This is fair because the "
+         "score is benchmark-relative & risk-adjusted (each fund vs its OWN peers), not raw returns. "
+         "Pick a category to drill in.")
+
+if view == ALL_LABEL:
+    st.caption("**Top-to-bottom = best-to-worst overall.** Ranking all actively-managed equity funds "
+               "together is valid because the score is **benchmark-relative & risk-adjusted** (each fund "
+               "vs its own peers), not raw returns. ⚠️ But *which to buy* also depends on your risk "
+               "appetite — **diversify across categories**, don't just buy the top five (which may all be "
+               "small-caps). Satellite & Index funds are in their own views.")
+    if core:
+        render_group(core, show_category=True)
+    else:
+        st.info("No core equity funds in this run — see the Satellite / Index views.")
+elif view.startswith("⚖️"):
+    st.warning("⚖️ **Hybrid / multi-asset funds hold gold + debt + equity**, so their low volatility "
+               "**inflates Sharpe & downside-capture** — that high score is diversification, *not* equity "
+               "skill. Don't compare these to pure-equity compounders; they're a lower-risk, lower-growth "
+               "sleeve. This is why they're kept OUT of the 'All core equity' ranking.")
+    render_group(hybrid, show_category=True)
+elif view.startswith("🛰️"):
+    st.warning("⚠️ Benchmarked to a generic index (no free sector/foreign index) — **Alpha & "
+               "downside-capture are unreliable** here. Judge these on the theme's outlook, not the score.")
+    render_group(satellite, show_category=True)
+elif view.startswith("📉"):
+    st.caption("Index funds are meant to **match** the market — judge on low tracking error & expense "
+               "ratio, not alpha/Sharpe. A small positive alpha ≈ the index dividend yield.")
+    render_group(passive, show_category=True)
+else:
+    cat = next((c for c in present_cats if bycat[c][0]["category_label"] == view), None)
+    if cat:
+        render_group(bycat[cat], show_category=False)
 
 # CSV mirrors the grouped display: sorted by group, with an in-category rank column.
 csv_rows = []
@@ -210,6 +234,8 @@ for cat in order:
     grp = bycat.get(cat)
     if grp:
         _add_group(grp[0]["category_label"], grp)
+if hybrid:
+    _add_group("Hybrid / Multi-Asset", hybrid)
 if satellite:
     _add_group("Satellite (thematic/international)", satellite)
 if passive:
@@ -244,7 +270,7 @@ h1, h2, h3, h4, h5, h6 = st.columns([1.6, 1, 1, 1, 1, 1])
 with h1:
     st.markdown(f"#### {pick}")
     st.markdown(badge_html(sel_sum["verdict"]), unsafe_allow_html=True)
-h2.metric("Score", f'{sel_sum["score"]}/100' if sel_sum["score"] is not None else "—",
+h2.metric("Score", f'{sel_sum["score"]}/100' if (sel_sum["score"] is not None and sel_sum["verdict"] != "UNTESTED") else "—",
           help="Computed Tier-1 score. Not a prediction of future return.")
 h3.metric("CAGR 3y / 5y", f'{fmt_pct(sel_sum["cagr_3y"], sign=False)} / {fmt_pct(sel_sum["cagr_5y"], sign=False)}')
 h4.metric("Alpha", fmt_pct(sel_sum["alpha"]), help="vs price index → overstated ~div yield.")

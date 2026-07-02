@@ -50,6 +50,17 @@ def _is_international(name: str) -> bool:
 
 def classify_category(*strings) -> str:
     blob = " ".join(s for s in strings if s).lower()
+    # Hybrid / multi-asset FIRST: these hold gold/debt, so their low volatility
+    # inflates Sharpe/downside-capture — they are NOT pure-equity and must not be
+    # ranked against equity funds (SEBI classifies them as a separate Hybrid group).
+    if any(k in blob for k in ("hybrid", "balanced", "multi asset", "multi-asset",
+                               "asset allocation", "arbitrage", "equity savings",
+                               "dynamic asset")):
+        return "hybrid"
+    # Index / ETF BEFORE cap keywords: a "Nifty Midcap 150 ... Index" fund is
+    # passive, not an active mid-cap — it shouldn't be judged on alpha.
+    if "index" in blob or "etf" in blob:
+        return "index"
     if "large" in blob and "mid" in blob:
         return "large_mid"
     if "large" in blob:
@@ -89,6 +100,7 @@ BENCHMARK = {
     "elss": ("yf", "^CRSLDX", "Nifty 500", False),
     "value": ("yf", "^CRSLDX", "Nifty 500", False),
     "thematic": ("yf", "^CRSLDX", "Nifty 500 (proxy — sector index not free)", True),
+    "hybrid": ("yf", "^CRSLDX", "Nifty 500 (proxy — hybrid holds non-equity)", True),
     "index": ("yf", "^NSEI", "Nifty 50", False),
     "equity_other": ("yf", "^CRSLDX", "Nifty 500", False),
 }
@@ -98,7 +110,8 @@ CAT_LABEL = {
     "large": "Large Cap", "large_mid": "Large & Mid Cap", "mid": "Mid Cap",
     "small": "Small Cap", "flexi": "Flexi Cap", "multi": "Multi Cap",
     "focused": "Focused", "elss": "ELSS", "value": "Value/Contra",
-    "index": "Index/ETF", "thematic": "Sectoral/Thematic", "equity_other": "Equity",
+    "index": "Index/ETF", "thematic": "Sectoral/Thematic",
+    "hybrid": "Hybrid / Multi-Asset", "equity_other": "Equity",
 }
 
 # category-specific thresholds (editable)
@@ -247,9 +260,17 @@ def analyze_fund(query: str, rf: float = RISK_FREE_DEFAULT) -> dict:
 
     cat = classify_category(meta.get("scheme_category"), enr.get("fund_category"), name)
     intl = _is_international(name)
-    # bucket (core / satellite / passive) is by CATEGORY TYPE, independent of
-    # benchmark quality: sector/thematic & foreign-equity funds are satellites.
-    bucket = "satellite" if (cat == "thematic" or intl) else ("passive" if cat == "index" else "core")
+    # bucket by CATEGORY TYPE (not benchmark quality): hybrids hold non-equity so
+    # their risk-adjusted metrics aren't comparable to pure equity; sector/thematic
+    # & foreign-equity are satellites; index funds are passive.
+    if cat == "hybrid":
+        bucket = "hybrid"
+    elif cat == "thematic" or intl:
+        bucket = "satellite"
+    elif cat == "index":
+        bucket = "passive"
+    else:
+        bucket = "core"
 
     b_kind, b_ref, bench_name, is_proxy = BENCHMARK.get(cat, BENCHMARK["equity_other"])
     if intl:  # foreign-equity fund: an Indian index is meaningless
