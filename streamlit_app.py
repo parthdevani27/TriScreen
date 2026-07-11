@@ -14,12 +14,9 @@ st.set_page_config(page_title="Market Analysis", page_icon="📈",
                    layout="wide", initial_sidebar_state="expanded")
 
 from components.theme import inject_css, apply_theme
-from components.auth import require_login, render_account
 
 apply_theme()      # flip palette to the active light/dark theme (⚙ Settings menu) — before CSS + pages
 inject_css()
-require_login()    # Google login + email allow-list (no-op locally without [auth] secrets)
-render_account()   # account chip + logout at top of sidebar (before pages, so it always renders)
 
 stocks = st.Page("views/stocks.py", title="Stocks", icon=":material/trending_up:", default=True)
 funds = st.Page("views/mutual_funds.py", title="Mutual Funds", icon=":material/account_balance:")
